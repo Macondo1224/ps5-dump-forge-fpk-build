@@ -75,9 +75,15 @@ jobs:
           else
             N=1
             if [ -n "$OLD" ]; then N=$(( ${OLD##*-} + 1 )); fi
+            # BUILD_BASE：本仓库第一次构建某个上游版本时的起始构建号偏移。
+            # 存在原因：飞牛壳在接入本仓库之前，构建号已经由 NAS 本地发版推进到 20+，
+            # 若这里从 1 起编，新包版本会「小于」已装版本，徽标就不会提示更新。
+            # 上游升到新版本后（如 0.5.5）可以把仓库变量 BUILD_BASE 改回 0。
+            BASE="${{ vars.BUILD_BASE }}"; BASE="${BASE:-0}"
+            if [ "$N" -le "$BASE" ]; then N=$(( BASE + 1 )); fi
             echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "ver=${UP}-${N}" >> "$GITHUB_OUTPUT"
-            echo "将构建版本 ${UP}-${N}"
+            echo "将构建版本 ${UP}-${N}（BUILD_BASE=${BASE}）"
           fi
 
       - name: 构建（容器内，与 NAS 同一份脚本）
