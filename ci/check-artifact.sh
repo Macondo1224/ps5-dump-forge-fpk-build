@@ -23,13 +23,21 @@ if grep -aq "web UI not built" "$SRC"; then
     fail "产物里是 'web UI not built' 占位页 —— 前端没在 cargo build 之前构建"
 fi
 
-# 闸门 2：网关前缀补丁必须真的进了前端产物
-# 补丁给三个前端文件插入了 `const BASE = ... location.pathname ...`，
-# location 是浏览器全局属性，压缩混淆不会改名，因此这个串是可靠的指纹。
-if ! grep -aq "location.pathname" "$SRC"; then
-    fail "前端里找不到网关前缀补丁（location.pathname）—— ci/patch-gateway.mjs 没生效"
-fi
-echo "网关前缀补丁: 已嵌入"
+# 闸门 2：网关前缀补丁与前端构建都真的发生了
+# 构建元信息由 build-in-docker.sh 在容器内写出（补丁处数、带 BASE 的文件数、index.html 大小）。
+# 不用二进制里 grep 字符串：前端资产被压缩后未必保留明文指纹。
+META="$(dirname "$SRC")/build-meta.json"
+[ -f "$META" ] || fail "缺少 $META —— 构建脚本没跑到导出步骤"
+echo "--- 构建元信息 ---"; cat "$META"; echo
+read -r PF PI < <(python3 - "$META" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+print(d.get("patch_files",0), d.get("index_bytes",0))
+PY
+)
+[ "${PF:-0}" = "3" ] || fail "网关补丁只落到 $PF/3 个前端文件 —— ci/patch-gateway.mjs 没生效"
+[ "${PI:-0}" -gt 100 ] || fail "前端 dist-http/index.html 只有 $PI 字节 —— 前端没真正构建"
+echo "网关前缀补丁: 已嵌入 3/3 文件；前端 index.html: $PI 字节"
 
 # 闸门 3：glibc 不能超过飞牛的能力（fnOS = Debian 12 = glibc 2.36）
 MAXV=$(strings -a "$SRC" | grep -oE 'GLIBC_2\.[0-9]+' | sed 's/GLIBC_2\.//' | sort -n | tail -1 || true)

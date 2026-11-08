@@ -44,7 +44,15 @@ elif ! git clone --depth 1 --branch "$TAG" https://gh-proxy.com/https://github.c
 fi
 
 echo "==> [3/8] 打统一网关前缀补丁"
-node /scripts/patch-gateway.mjs /work/src
+node /scripts/patch-gateway.mjs /work/src | tee /work/patch.log
+PATCH_EDITS=$(sed -n 's/^已改动 \([0-9]\+\) 处.*/\1/p' /work/patch.log | head -1)
+PATCH_EDITS="${PATCH_EDITS:-0}"
+# 三个前端文件里都应出现 BASE 声明；少一个就说明补丁没打全
+PATCH_FILES=$(grep -l "const BASE = " \
+    /work/src/app/src/http-client.ts /work/src/app/src/launcher.ts /work/src/app/src/common.tsx \
+    2>/dev/null | wc -l | tr -d ' ')
+echo "    补丁：$PATCH_EDITS 处改动，$PATCH_FILES/3 个文件带 BASE 声明"
+[ "$PATCH_FILES" = "3" ] || { echo "补丁未落到全部 3 个前端文件，中止"; exit 1; }
 
 echo "==> [4/8] npm 安装依赖"
 cd /work/src/app
@@ -55,6 +63,7 @@ npm install --no-save @rolldown/binding-linux-x64-gnu --registry="$NPM_REG"
 echo "==> [5/8] 构建前端 (build:http)"
 npm run build:http
 ls -l dist-http/index.html
+INDEX_BYTES=$(stat -c%s dist-http/index.html)
 
 echo "==> [6/8] 配置 cargo 镜像"
 if [ "${FORGE_CARGO_DIRECT:-0}" = "1" ]; then
@@ -71,6 +80,17 @@ cargo build --release -p ps5-dump-forge-cli
 echo "==> [8/8] 导出产物"
 cp /work/target/release/ps5-dump-forge /out/ps5-dump-forge-webui
 chmod 755 /out/ps5-dump-forge-webui
+# 构建元信息：给 CI 闸门核对「补丁打了、前端真构建了」，不依赖压缩后的字符串指纹
+cat > /out/build-meta.json <<META
+{
+  "tag": "$TAG",
+  "patch_edits": $PATCH_EDITS,
+  "patch_files": $PATCH_FILES,
+  "index_bytes": ${INDEX_BYTES:-0},
+  "built_at": "$(date -u '+%FT%TZ')"
+}
+META
+cat /out/build-meta.json
 rm -f /out/.build-ok
 touch /out/.build-ok
 echo "==> 完成 $(date '+%F %T')"
