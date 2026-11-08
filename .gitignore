@@ -1,0 +1,5 @@
+out/
+work/
+notes.md
+*.log
+.DS_Store

@@ -1,0 +1,176 @@
+name: build
+
+# 定时查上游最新 release，有新版本就构建「含 Web UI + 飞牛网关补丁」的 Linux x86_64 二进制，
+# 发到本仓库的 Release，并刷新 feed/manifest.json 供飞牛 fpk 的更新边车拉取。
+#
+# 关键约束（别改）：
+#   runs-on: ubuntu-22.04  —— 飞牛是 Debian 12 / glibc 2.36，用 ubuntu-latest (24.04 / 2.39)
+#                             构建出来的二进制在飞牛上会直接起不来。
+#   容器用 rust:1-bookworm —— 与 NAS 上验证过的构建环境完全一致。
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "上游 tag（如 v0.5.5）；留空取最新 release"
+        required: false
+        default: ""
+      force:
+        description: "该上游版本已构建过也重编（构建号 +1）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: quer3q/ps5-dump-forge
+  # Release 资产的下载镜像前缀；NAS 直连 objects.githubusercontent.com 不通，靠它中转。
+  # 镜像挂了只改这一行（或下面 manifest 里的 URL），不用重发二进制。
+  MIRROR: https://ghfast.top
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 解析上游 tag
+        id: t
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "${TAG}" ]; then
+            TAG=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/$UPSTREAM/releases/latest" | jq -r .tag_name)
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then echo "::error::拿不到上游 tag"; exit 1; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "up=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "上游 tag: $TAG"
+
+      - name: 去重（同一上游版本只构建一次）
+        id: dup
+        run: |
+          set -euo pipefail
+          UP="${{ steps.t.outputs.up }}"
+          OLD=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+                "https://api.github.com/repos/${{ github.repository }}/releases?per_page=100" \
+                | jq -r --arg p "v${UP}-" \
+                  '[.[] | select(.tag_name | startswith($p))] | sort_by(.created_at) | last | .tag_name // ""')
+          if [ -n "$OLD" ] && [ "${{ github.event.inputs.force }}" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "已有 $OLD，跳过构建"
+          else
+            N=1
+            if [ -n "$OLD" ]; then N=$(( ${OLD##*-} + 1 )); fi
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "ver=${UP}-${N}" >> "$GITHUB_OUTPUT"
+            echo "将构建版本 ${UP}-${N}"
+          fi
+
+      - name: 构建（容器内，与 NAS 同一份脚本）
+        if: steps.dup.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p out work
+          docker run --rm \
+            -v "$PWD/ci:/scripts:ro" -v "$PWD/out:/out" -v "$PWD/work:/work" \
+            -e FORGE_TAG="${{ steps.t.outputs.tag }}" \
+            -e FORGE_REPO_URL="https://github.com/$UPSTREAM" \
+            -e FORGE_NODE_BASE="https://nodejs.org/dist" \
+            -e FORGE_NPM_REGISTRY="https://registry.npmjs.org" \
+            -e FORGE_CARGO_DIRECT=1 \
+            -e NODE_VER=v22.14.0 \
+            rust:1-bookworm sh /scripts/build-in-docker.sh
+
+      - name: 产物闸门（占位页 / glibc / 可执行）
+        if: steps.dup.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          sudo chmod -R a+rX out
+          bash ci/check-artifact.sh out/ps5-dump-forge-webui
+
+      - name: 发 Release
+        id: rel
+        if: steps.dup.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          VER="${{ steps.dup.outputs.ver }}"
+          NAME="ps5-dump-forge-x86_64.${VER}"
+          cp out/ps5-dump-forge-webui "$NAME"
+          chmod 755 "$NAME"
+          SHA=$(sha256sum "$NAME" | cut -d' ' -f1)
+          SIZE=$(stat -c%s "$NAME")
+          {
+            echo "asset=$NAME"
+            echo "sha=$SHA"
+            echo "size=$SIZE"
+            echo "url=$MIRROR/https://github.com/${{ github.repository }}/releases/download/v${VER}/${NAME}"
+          } >> "$GITHUB_OUTPUT"
+
+          cat > notes.md <<EOF
+          自动构建自上游 **${{ steps.t.outputs.tag }}**，含飞牛统一网关前缀补丁。
+
+          - 产物：Linux x86_64，要求 glibc ≤ 2.36（Debian 12 / 飞牛 fnOS）
+          - 校验：Web UI 已嵌入（无 \`web UI not built\` 占位串）、\`--version\` 可执行
+          - 源码：https://github.com/$UPSTREAM/tree/${{ steps.t.outputs.tag }}
+          - 补丁：本仓库 \`ci/patch-gateway.mjs\`（在 \`/app/<appname>\` 前缀下修正前端请求路径）
+          EOF
+          gh release create "v${VER}" "$NAME" \
+            --title "飞牛壳 ${VER}（上游 ${{ steps.t.outputs.tag }}）" \
+            --notes-file notes.md
+
+      - name: 刷新 feed/manifest.json
+        if: steps.dup.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          python3 - "${{ steps.dup.outputs.ver }}" "${{ steps.rel.outputs.url }}" \
+                     "${{ steps.rel.outputs.sha }}" "${{ steps.rel.outputs.size }}" \
+                     "${{ steps.t.outputs.tag }}" <<'PY'
+          import json, sys, os
+          ver, url, sha, size, tag = sys.argv[1:6]
+          p = "feed/manifest.json"
+          man = {}
+          if os.path.exists(p):
+              try:
+                  man = json.load(open(p, encoding="utf-8"))
+              except Exception:
+                  man = {}
+          man["version"] = ver
+          man["notes"] = (
+              "自动构建自上游 %s，含飞牛统一网关补丁。"
+              "产物 x86_64，glibc≤2.36；已校验 Web UI 嵌入与可执行性。" % tag
+          )
+          man.setdefault("assets", {})["x86_64"] = {
+              "file": url,          # 完整 URL：走镜像前缀，NAS 直连 Release 资产不通
+              "sha256": sha,
+              "size": int(size),
+          }
+          with open(p, "w", encoding="utf-8") as f:
+              json.dump(man, f, ensure_ascii=False, indent=2)
+              f.write("\n")
+          print(json.dumps(man, ensure_ascii=False, indent=2))
+          PY
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- feed/manifest.json; then
+            echo "manifest 无变化"
+          else
+            git add feed/manifest.json
+            git commit -m "feed: ${{ steps.dup.outputs.ver }}"
+            git push
+            echo "manifest 已更新"
+          fi
