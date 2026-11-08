@@ -49,14 +49,18 @@ else
 fi
 
 # 闸门 4：真的能跑（在临时副本上，避免 root 属主导致的权限错误）
+# 上游 CLI 没有 --version 参数（会打印帮助并以非 0 退出），所以用 --help + 输出里有没有用法行来判断。
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT
 cp "$SRC" "$TMPD/bin"
 chmod 755 "$TMPD/bin"
-"$TMPD/bin" --version || fail "--version 跑不起来（架构或动态库不匹配）"
+file "$TMPD/bin" 2>/dev/null | sed 's/^/文件类型: /' || true
+HELP="$("$TMPD/bin" --help 2>&1 || true)"
+echo "$HELP" | grep -qiE 'usage|用法' || fail "--help 跑不起来或没有输出用法（架构或动态库不匹配？）"
+echo "可执行性: 通过（--help 正常输出）"
 
 # 附加信息，便于事后核对
 echo "--- 运行时信息 ---"
-"$TMPD/bin" --version
+echo "$HELP" | head -3
 echo "sha256: $(sha256sum "$SRC" | cut -d' ' -f1)"
 echo "OK"
