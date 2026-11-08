@@ -1,5 +1,11 @@
 {
-  "version": "0.0.0",
-  "notes": "等待首次构建。",
-  "assets": {}
+  "version": "0.5.4-1",
+  "notes": "自动构建自上游 v0.5.4，含飞牛统一网关补丁。产物 x86_64，glibc≤2.36；已校验 Web UI 嵌入与可执行性。",
+  "assets": {
+    "x86_64": {
+      "file": "https://ghfast.top/https://github.com/Macondo1224/ps5-dump-forge-fpk-build/releases/download/v0.5.4-1/ps5-dump-forge-x86_64.0.5.4-1",
+      "sha256": "d21cf2a2e292a5fd739abbfcabc8eaa8690f0163cbfa883208844fe7b4ec6464",
+      "size": 12092792
+    }
+  }
 }
