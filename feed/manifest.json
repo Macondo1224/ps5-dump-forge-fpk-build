@@ -1,11 +1,11 @@
 {
-  "version": "0.5.5-22",
-  "notes": "自动构建自上游 v0.5.5，含飞牛统一网关补丁。产物 x86_64，glibc≤2.36；已校验 Web UI 嵌入与可执行性。",
+  "version": "0.5.6-22",
+  "notes": "自动构建自上游 v0.5.6，含飞牛统一网关补丁。产物 x86_64，glibc≤2.36；已校验 Web UI 嵌入与可执行性。",
   "assets": {
     "x86_64": {
-      "file": "https://ghfast.top/https://github.com/Macondo1224/ps5-dump-forge-fpk-build/releases/download/v0.5.5-22/ps5-dump-forge-x86_64.0.5.5-22",
-      "sha256": "ced47d80387d81881930a8d24b2aaffe762f05d51dc6d3af7043f20502611de7",
-      "size": 12128504
+      "file": "https://ghfast.top/https://github.com/Macondo1224/ps5-dump-forge-fpk-build/releases/download/v0.5.6-22/ps5-dump-forge-x86_64.0.5.6-22",
+      "sha256": "f4f2632782e5dfabe0ced792ccdbb66c3459d266e2fda95962032df0b80c5cfa",
+      "size": 12182648
     }
   }
 }
